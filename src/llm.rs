@@ -1,4 +1,18 @@
+use ratatui::{
+    buffer::Buffer,
+    layout::{Alignment, Rect},
+    style::Color,
+    text::{Line, Text},
+    widgets::{Block, Borders, Paragraph, Widget, Wrap},
+};
+use regex::Regex;
+use reqwest::{header::CONTENT_TYPE, Client};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
+use std::{env, io::Result};
+use tokio::sync::mpsc::UnboundedSender;
+
+use crate::event::Event;
 
 // LLMResponse Example:
 // ```json
@@ -27,8 +41,7 @@ pub struct LLMResponse {
     created: u64,
     model: String,
     choices: Vec<Choice>,
-    usage: Usage,
-    system_fingerprint: String,
+    usage: Option<Usage>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -44,15 +57,16 @@ pub struct Usage {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Choice {
     index: u64,
-    message: Message,
+    message: Option<Message>,
+    delta: Option<Message>,
     logprobs: Option<()>,
-    finish_reason: String,
+    finish_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
-    pub role: String,
-    pub content: String,
+    pub role: Option<String>,
+    pub content: Option<String>,
 }
 
 impl LLMResponse {
@@ -61,13 +75,20 @@ impl LLMResponse {
     }
 
     pub fn extract_message(&self) -> Message {
-        self.choices[0].message.clone()
+        if self.choices[0].message.is_some() {
+            self.choices[0].message.clone().unwrap()
+        } else {
+            self.choices[0].delta.clone().unwrap()
+        }
     }
 }
 
 impl Message {
     fn new(role: String, content: String) -> Self {
-        Message { role, content }
+        Message {
+            role: Some(role),
+            content: Some(content),
+        }
     }
 
     pub fn user(content: String) -> Self {
@@ -76,5 +97,114 @@ impl Message {
 
     pub fn assistant(content: String) -> Self {
         Message::new("assistant".to_string(), content)
+    }
+
+    pub fn len(&self) -> usize {
+        self.content.as_ref().unwrap().split('\n').count()
+    }
+}
+
+impl Widget for &Message {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        if self.content.is_none() {
+            return;
+        }
+
+        let (align, title_color) = match self.role.as_deref() {
+            Some("user") => (Alignment::Right, Color::Blue),
+            _ => (Alignment::Left, Color::Green),
+        };
+
+        let block = Block::default()
+            .title_top(self.role.as_ref().unwrap().as_str())
+            .title_style(title_color)
+            .title_alignment(align)
+            .borders(Borders::ALL);
+
+        let text = self
+            .content
+            .as_ref()
+            .unwrap()
+            .split('\n')
+            .into_iter()
+            .map(|line| Line::from(line))
+            .collect::<Vec<_>>();
+        // let text = self.content.clone().cyan();
+        Paragraph::new(Text::from(text))
+            .block(block)
+            .wrap(Wrap { trim: false })
+            .render(area, buf);
+    }
+}
+
+#[derive(Debug)]
+pub struct ChatGPT {
+    cli: Client,
+}
+
+impl ChatGPT {
+    pub fn new() -> Self {
+        Self { cli: Client::new() }
+    }
+
+    pub async fn request(&mut self, prompt: &str, tx: &UnboundedSender<Event>) -> Result<()> {
+        let endpoint = env::var("LLM_ENDPOINT").unwrap_or("".to_owned());
+        let api_key = env::var("LLM_API_KEY").unwrap_or("".to_owned());
+        let model = env::var("LLM_MODEL").unwrap_or("mixtral-8x7b-32768".to_owned());
+
+        let data = json!({
+            "model": model,
+            "stream": true,
+            "messages": [
+               { "role": "user", "content": prompt}
+            ]
+        });
+
+        tx.send(Event::LLMEventStart).unwrap();
+
+        let resp = self
+            .cli
+            .post(endpoint)
+            .bearer_auth(api_key)
+            .header(CONTENT_TYPE, "application/json")
+            .json(&data)
+            .send()
+            .await
+            .unwrap();
+
+        match resp.error_for_status() {
+            Err(_e) => {
+                tx.send(Event::LLMEventEnd).unwrap();
+            }
+            Ok(mut resp) => {
+                while let Some(bytes) = resp.chunk().await.unwrap() {
+                    let str = std::str::from_utf8(&bytes).unwrap();
+                    let re = Regex::new(r"data:\s(.*)").unwrap();
+
+                    for caps in re.captures_iter(str) {
+                        let (_, [payload]) = caps.extract();
+                        if payload == "[DONE]" {
+                            tx.send(Event::LLMEventEnd).unwrap();
+                        } else {
+                            match serde_json::from_str::<LLMResponse>(payload) {
+                                Ok(data) => {
+                                    assert!(data.choices.len() > 0);
+                                    tx.send(Event::LLMEventDelta(data.extract_message()))
+                                        .unwrap();
+                                }
+                                Err(e) => {
+                                    tx.send(Event::Notification(format!(
+                                        "Error: {}\ndata: {}",
+                                        e, payload
+                                    )))
+                                    .unwrap();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 }
