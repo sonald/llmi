@@ -1,13 +1,16 @@
 use crossterm::event::{Event as CrosstermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::backend::Backend;
+use ratatui::layout::Size;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use ratatui::{layout::Constraint, Frame, Terminal};
 use tokio::sync::Mutex;
+use tui_scrollview::{ScrollView, ScrollViewState};
 use tui_textarea::TextArea;
 
 use std::io::Result;
 use std::sync::Arc;
+use std::u16;
 
 use crate::event::{Event, EventManager};
 use crate::llm::{ChatGPT, Message};
@@ -21,6 +24,7 @@ pub struct App<'a> {
     notification: Option<String>,
     current_message: Option<String>, // current message on the fly
     llm: Arc<Mutex<ChatGPT>>,
+    scroll_view_state: ScrollViewState,
 }
 
 impl<'a> App<'a> {
@@ -34,6 +38,7 @@ impl<'a> App<'a> {
             notification: None,
             current_message: None,
             llm: Arc::new(Mutex::new(ChatGPT::new())),
+            scroll_view_state: ScrollViewState::default(),
         }
     }
 
@@ -61,7 +66,9 @@ impl<'a> App<'a> {
                     self.current_message.take();
                 }
                 Ok(Event::Notification(msg)) => {
-                    self.notification.replace(msg);
+                    // self.notification.replace(msg);
+
+                    self.notification.get_or_insert(msg.clone()).push_str(&msg);
                 }
                 Ok(Event::TickEvent) => {
                     // println!("tick");
@@ -85,27 +92,39 @@ impl<'a> App<'a> {
     }
 
     fn render_frame(&mut self, frame: &mut Frame<'_>) {
-        let maxh = frame.size().height.min(8).max(1);
-        let h = if self.input.lines().len() <= maxh as usize {
-            Constraint::Min(self.input.lines().len() as u16 + 2)
+        if self.notification.is_some() {
+            self.render_notification(frame);
         } else {
-            Constraint::Length(maxh + 2)
-        };
-        let [chat_area, inp] =
-            Layout::vertical([Constraint::Percentage(100), h]).areas(frame.size());
+            let maxh = frame.size().height.min(8).max(1);
+            let h = if self.input.lines().len() <= maxh as usize {
+                Constraint::Min(self.input.lines().len() as u16 + 2)
+            } else {
+                Constraint::Length(maxh + 2)
+            };
+            let [chat_area, inp] =
+                Layout::vertical([Constraint::Percentage(100), h]).areas(frame.size());
 
-        frame.render_widget(&*self, chat_area);
+            self.render_input(frame, inp);
+            frame.render_widget(self, chat_area);
+        }
+    }
 
-        {
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(Color::Cyan));
-            self.input.set_block(block);
-
-            frame.render_widget(self.input.widget(), inp)
+    fn calculate_message_size(&self, width: u16) -> Size {
+        let mut size = Size::default();
+        for msg in &self.messages {
+            size.height += msg.len_by_columns(width) as u16 + 2;
+        }
+        if let Some(ref delta) = self.current_message {
+            let delta_msg = Message::assistant(delta.clone());
+            size.height += delta_msg.len_by_columns(width) as u16 + 2;
         }
 
+        size.width = width - 2;
+
+        size
+    }
+
+    fn render_notification(&mut self, frame: &mut Frame<'_>) {
         // TODO: popup and fade out later
         if let Some(ref notif) = self.notification {
             let lines: Vec<_> = notif
@@ -127,6 +146,15 @@ impl<'a> App<'a> {
                 size,
             );
         }
+    }
+
+    fn render_input(&mut self, frame: &mut Frame<'_>, inp: Rect) {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(Color::Cyan));
+        self.input.set_block(block);
+        frame.render_widget(self.input.widget(), inp)
     }
 
     async fn process_event(&mut self, ev: CrosstermEvent) {
@@ -186,15 +214,32 @@ impl<'a> App<'a> {
     }
 }
 
-impl<'a> Widget for &App<'a> {
+impl<'a> Widget for &mut App<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        let scroll_size = self.calculate_message_size(area.width);
+
+        let mut offset = self.scroll_view_state.offset();
+        if scroll_size.height > area.height {
+            offset.y = scroll_size.height - area.height;
+        }
+        self.scroll_view_state.set_offset(offset);
+
+        let mut scroll_view = ScrollView::new(scroll_size);
+        self.render_into_scroll_view(scroll_view.buf_mut());
+        scroll_view.render(area, buf, &mut self.scroll_view_state);
+    }
+}
+
+impl<'a> App<'a> {
+    fn render_into_scroll_view(&mut self, buf: &mut Buffer) {
+        let area = buf.area;
         let mut offset = area.y;
         self.messages.iter().for_each(|msg| {
             let sub_area = Rect {
-                x: area.x,
+                x: area.x + 1,
                 y: offset,
-                width: area.width,
-                height: msg.len() as u16 + 2,
+                width: area.width - 2,
+                height: msg.len_by_columns(area.width - 2) as u16 + 2,
             };
             offset += sub_area.height;
             msg.render(sub_area, buf)
@@ -206,7 +251,7 @@ impl<'a> Widget for &App<'a> {
                 x: area.x,
                 y: offset,
                 width: area.width,
-                height: delta_msg.len() as u16 + 2,
+                height: delta_msg.len_by_columns(area.width - 2) as u16 + 2,
             };
             delta_msg.render(sub_area, buf);
         }

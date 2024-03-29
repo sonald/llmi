@@ -99,8 +99,17 @@ impl Message {
         Message::new("assistant".to_string(), content)
     }
 
-    pub fn len(&self) -> usize {
-        self.content.as_ref().unwrap().split('\n').count()
+    pub fn len_by_columns(&self, max_width: u16) -> usize {
+        self.content
+            .as_ref()
+            .unwrap()
+            .split('\n')
+            .flat_map(|ln| {
+                let len = ln.chars().count();
+                let count = len / max_width as usize + 1;
+                vec!['a'; count]
+            })
+            .count()
     }
 }
 
@@ -193,11 +202,11 @@ impl ChatGPT {
                                         .unwrap();
                                 }
                                 Err(e) => {
-                                    tx.send(Event::Notification(format!(
-                                        "Error: {}\ndata: {}",
-                                        e, payload
-                                    )))
-                                    .unwrap();
+                                    // tx.send(Event::Notification(format!(
+                                    //     "Error: {} data: | {} |",
+                                    //     e, payload
+                                    // )))
+                                    // .unwrap();
                                 }
                             }
                         }

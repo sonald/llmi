@@ -15,9 +15,12 @@ mod tests {
     fn llm_resolve_empty_delta() {
         let payload = r#"{"id":"chatcmpl-814de58f-d884-4f09-a0dd-276b02a04e41","object":"chat.completion.chunk","created":1711681319,"model":"mixtral-8x7b-32768","system_fingerprint":"fp_1cc6d039b0","choices":[{"index":0,"delta":{},"logprobs":null,"finish_reason":"stop"}],"x_groq":{"id":"req_01ht42gbv3ev59x93kqrkbstnr","usage":{"queue_time":0.060529005,"prompt_tokens":12,"prompt_time":0.005,"completion_tokens":164,"completion_time":0.289,"total_tokens":176,"total_time":0.294}}}"#;
         let msg = serde_json::from_str::<LLMResponse>(payload);
-        // split_str_by_40_chars(payload, 60).iter().for_each(|s| {
-        //     eprintln!("{}", s);
-        // });
+        split_str_by_40_chars(payload, 60)
+            .iter()
+            .take(2)
+            .for_each(|s| {
+                eprintln!("{}", s);
+            });
         eprintln!("msg: {:?}", msg);
         assert!(msg.is_ok());
     }
@@ -28,5 +31,16 @@ mod tests {
         let msg = serde_json::from_str::<LLMResponse>(payload);
         eprintln!("msg: {:?}", msg);
         assert!(msg.is_ok());
+    }
+
+    #[test]
+    fn llm_test_len_by_columns() {
+        let msg = Message {
+            role: Some("assistant".to_string()),
+            content: Some("Hello! How can I help you today? If you have any questions about a particular topic or just want to chat, I'm here to assist. Let me know what's on your mind.".to_string()),
+        };
+
+        assert_eq!(msg.len_by_columns(80), 2);
+        assert_eq!(msg.len_by_columns(40), 4);
     }
 }
