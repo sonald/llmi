@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use ratatui::{
     buffer::Buffer,
     layout::{Alignment, Rect},
@@ -5,14 +6,11 @@ use ratatui::{
     text::{Line, Text},
     widgets::{Block, Borders, Paragraph, Widget, Wrap},
 };
-use regex::Regex;
-use reqwest::{header::CONTENT_TYPE, Client};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
-use std::{env, io::Result};
+use std::io::Result;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::event::Event;
+use crate::{chatgpt::ChatGPT, event::Event};
 
 // LLMResponse Example:
 // ```json
@@ -40,8 +38,8 @@ pub struct LLMResponse {
     object: String,
     created: u64,
     model: String,
-    choices: Vec<Choice>,
-    usage: Option<Usage>,
+    pub(crate) choices: Vec<Choice>,
+    pub(crate) usage: Option<Usage>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -146,74 +144,20 @@ impl Widget for &Message {
     }
 }
 
-#[derive(Debug)]
-pub struct ChatGPT {
-    cli: Client,
+#[async_trait]
+pub trait LLMService: Send + Sync {
+    async fn request(
+        &mut self,
+        prompt: &str,
+        mut history: Vec<Message>,
+        tx: UnboundedSender<Event>,
+    ) -> Result<()>;
 }
 
-impl ChatGPT {
-    pub fn new() -> Self {
-        Self { cli: Client::new() }
-    }
+pub struct LLMProvider {}
 
-    pub async fn request(&mut self, prompt: &str, tx: &UnboundedSender<Event>) -> Result<()> {
-        let endpoint = env::var("LLM_ENDPOINT").unwrap_or("".to_owned());
-        let api_key = env::var("LLM_API_KEY").unwrap_or("".to_owned());
-        let model = env::var("LLM_MODEL").unwrap_or("mixtral-8x7b-32768".to_owned());
-
-        let data = json!({
-            "model": model,
-            "stream": true,
-            "messages": [
-               { "role": "user", "content": prompt}
-            ]
-        });
-
-        tx.send(Event::LLMEventStart).unwrap();
-
-        let resp = self
-            .cli
-            .post(endpoint)
-            .bearer_auth(api_key)
-            .header(CONTENT_TYPE, "application/json")
-            .json(&data)
-            .send()
-            .await
-            .unwrap();
-
-        match resp.error_for_status() {
-            Err(_e) => {
-                tx.send(Event::LLMEventEnd).unwrap();
-            }
-            Ok(mut resp) => {
-                while let Some(bytes) = resp.chunk().await.unwrap() {
-                    let str = std::str::from_utf8(&bytes).unwrap();
-                    let re = Regex::new(r"data:\s(.*)").unwrap();
-
-                    for caps in re.captures_iter(str) {
-                        let (_, [payload]) = caps.extract();
-                        if payload == "[DONE]" {
-                            tx.send(Event::LLMEventEnd).unwrap();
-                        } else {
-                            match serde_json::from_str::<LLMResponse>(payload) {
-                                Ok(data) => {
-                                    assert!(data.choices.len() > 0);
-                                    tx.send(Event::LLMEventDelta(data.extract_message()))
-                                        .unwrap();
-                                }
-                                Err(e) => {
-                                    // tx.send(Event::Notification(format!(
-                                    //     "Error: {} data: | {} |",
-                                    //     e, payload
-                                    // )))
-                                    // .unwrap();
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        Ok(())
+impl LLMProvider {
+    pub fn new() -> Box<dyn LLMService> {
+        Box::new(ChatGPT::new())
     }
 }

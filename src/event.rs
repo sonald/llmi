@@ -1,4 +1,4 @@
-use crate::{llm::Message};
+use crate::llm::Message;
 use crossterm::event::Event as CrosstermEvent;
 use futures::{FutureExt, StreamExt};
 use std::{io::Result, time::Duration};

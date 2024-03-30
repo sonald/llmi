@@ -13,8 +13,7 @@ use std::sync::Arc;
 use std::u16;
 
 use crate::event::{Event, EventManager};
-use crate::llm::{ChatGPT, Message};
-#[derive(Debug)]
+use crate::llm::{LLMProvider, LLMService, Message};
 pub struct App<'a> {
     event_manager: EventManager,
     quit: bool,
@@ -23,7 +22,7 @@ pub struct App<'a> {
     messages: Vec<Message>, // list of completed messages
     notification: Option<String>,
     current_message: Option<String>, // current message on the fly
-    llm: Arc<Mutex<ChatGPT>>,
+    llm: Arc<Mutex<Box<dyn LLMService + 'static>>>,
     scroll_view_state: ScrollViewState,
 }
 
@@ -37,7 +36,7 @@ impl<'a> App<'a> {
             messages: Vec::default(),
             notification: None,
             current_message: None,
-            llm: Arc::new(Mutex::new(ChatGPT::new())),
+            llm: Arc::new(Mutex::new(LLMProvider::new())),
             scroll_view_state: ScrollViewState::default(),
         }
     }
@@ -198,12 +197,15 @@ impl<'a> App<'a> {
 
         let prompt = prompt.to_string();
         self.messages.push(Message::user(prompt.clone()));
+        let history = self.messages.clone();
 
         let llm = Arc::clone(&self.llm);
         let tx = self.event_manager.get_sender();
         tokio::spawn(async move {
             let mut llm = llm.lock().await;
-            llm.request(&prompt, &tx).await.expect("llm request failed");
+            llm.request(&prompt, history, tx)
+                .await
+                .expect("llm request failed");
         });
         self.clear();
     }
