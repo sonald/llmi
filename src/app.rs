@@ -110,12 +110,13 @@ impl<'a> App<'a> {
 
     fn calculate_message_size(&self, width: u16) -> Size {
         let mut size = Size::default();
+        let max_width = width * 4 / 5;
         for msg in &self.messages {
-            size.height += msg.len_by_columns(width) as u16 + 2;
+            size.height += msg.len_by_columns(max_width) as u16 + 2;
         }
         if let Some(ref delta) = self.current_message {
             let delta_msg = Message::assistant(delta.clone());
-            size.height += delta_msg.len_by_columns(width) as u16 + 2;
+            size.height += delta_msg.len_by_columns(max_width) as u16 + 2;
         }
 
         size.width = width - 2;
@@ -236,12 +237,19 @@ impl<'a> App<'a> {
     fn render_into_scroll_view(&mut self, buf: &mut Buffer) {
         let area = buf.area;
         let mut offset = area.y;
+        let max_width = area.width * 4 / 5;
         self.messages.iter().for_each(|msg| {
+            let x = if msg.role.as_ref().unwrap() == "user" {
+                area.x + area.width - max_width
+            } else {
+                area.x
+            };
+
             let sub_area = Rect {
-                x: area.x + 1,
+                x,
                 y: offset,
-                width: area.width - 2,
-                height: msg.len_by_columns(area.width - 2) as u16 + 2,
+                width: max_width,
+                height: msg.len_by_columns(max_width) as u16 + 2,
             };
             offset += sub_area.height;
             msg.render(sub_area, buf)
@@ -252,8 +260,8 @@ impl<'a> App<'a> {
             let sub_area = Rect {
                 x: area.x,
                 y: offset,
-                width: area.width,
-                height: delta_msg.len_by_columns(area.width - 2) as u16 + 2,
+                width: max_width,
+                height: delta_msg.len_by_columns(max_width) as u16 + 2,
             };
             delta_msg.render(sub_area, buf);
         }

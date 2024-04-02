@@ -99,15 +99,14 @@ impl Message {
 
     pub fn len_by_columns(&self, max_width: u16) -> usize {
         self.content
-            .as_ref()
+            .as_deref()
             .unwrap()
             .split('\n')
-            .flat_map(|ln| {
+            .fold(0, |acc, ln| {
                 let len = ln.chars().count();
                 let count = len / max_width as usize + 1;
-                vec!['a'; count]
+                acc + count
             })
-            .count()
     }
 }
 
@@ -128,15 +127,7 @@ impl Widget for &Message {
             .title_alignment(align)
             .borders(Borders::ALL);
 
-        let text = self
-            .content
-            .as_ref()
-            .unwrap()
-            .split('\n')
-            .into_iter()
-            .map(|line| Line::from(line))
-            .collect::<Vec<_>>();
-        // let text = self.content.clone().cyan();
+        let text = Text::from(self.content.as_deref().unwrap());
         Paragraph::new(Text::from(text))
             .block(block)
             .wrap(Wrap { trim: false })

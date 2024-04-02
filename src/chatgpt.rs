@@ -41,16 +41,11 @@ impl LLMService for ChatGPT {
                 hm
             })
             .collect::<Vec<_>>();
-        // messages.push({
-        //     let mut hm = HashMap::new();
-        //     hm.insert("role", "user".to_string());
-        //     hm.insert("content", prompt.to_string());
-        //     hm
-        // });
 
         let data = json!({
             "model": model,
             "stream": true,
+            "max_tokens": 3000,
             "messages": messages
         });
 
