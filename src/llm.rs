@@ -8,6 +8,12 @@ use ratatui::{
 };
 use serde::{Deserialize, Serialize};
 use std::io::Result;
+use syntect::{
+    easy::HighlightLines,
+    highlighting::{Style, ThemeSet},
+    parsing::SyntaxSet,
+    util::{as_24_bit_terminal_escaped, LinesWithEndings},
+};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{chatgpt::ChatGPT, event::Event};
@@ -98,15 +104,30 @@ impl Message {
     }
 
     pub fn len_by_columns(&self, max_width: u16) -> usize {
-        self.content
-            .as_deref()
-            .unwrap()
-            .split('\n')
-            .fold(0, |acc, ln| {
-                let len = ln.chars().count();
-                let count = len / max_width as usize + 1;
-                acc + count
+        let content = self.highlight_content();
+        content.split('\n').fold(0, |acc, ln| {
+            let len = ln.chars().count();
+            let count = len / max_width as usize + 1;
+            acc + count
+        })
+    }
+
+    fn highlight_content(&self) -> String {
+        let content = self.content.as_deref().unwrap_or("");
+        let ps = SyntaxSet::load_defaults_newlines();
+        let ts = ThemeSet::load_defaults();
+        let syntax = ps.find_syntax_by_extension("md").unwrap();
+        let mut h = HighlightLines::new(syntax, &ts.themes["base16-ocean.dark"]);
+
+        let highlighted = LinesWithEndings::from(content)
+            .map(|line| {
+                let ranges: Vec<(Style, &str)> = h.highlight_line(line, &ps).unwrap();
+                as_24_bit_terminal_escaped(&ranges[..], false)
             })
+            .collect::<Vec<String>>()
+            .join("");
+
+        highlighted
     }
 }
 
@@ -127,8 +148,9 @@ impl Widget for &Message {
             .title_alignment(align)
             .borders(Borders::ALL);
 
-        let text = Text::from(self.content.as_deref().unwrap());
-        Paragraph::new(Text::from(text))
+        let highlighted = self.highlight_content();
+        let text = Text::from(highlighted);
+        Paragraph::new(text)
             .block(block)
             .wrap(Wrap { trim: false })
             .render(area, buf);
