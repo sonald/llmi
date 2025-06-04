@@ -13,8 +13,10 @@ use std::io::Result;
 use std::sync::Arc;
 use std::u16;
 
+use crate::config::Config; // Added
 use crate::event::{Event, EventManager};
 use crate::llm::{LLMProvider, LLMService, Message};
+
 pub struct App<'a> {
     event_manager: EventManager,
     quit: bool,
@@ -25,10 +27,12 @@ pub struct App<'a> {
     current_message: Option<String>, // current message on the fly
     llm: Arc<Mutex<Box<dyn LLMService + 'static>>>,
     scroll_view_state: ScrollViewState,
+    config: Arc<Config>, // Added
 }
 
 impl<'a> App<'a> {
-    pub fn new() -> Self {
+    pub fn new(config: Config) -> Self { // Modified signature
+        let config_arc = Arc::new(config); // Create Arc<Config>
         Self {
             event_manager: EventManager::new(),
             quit: false,
@@ -37,8 +41,10 @@ impl<'a> App<'a> {
             messages: Vec::default(),
             notification: None,
             current_message: None,
-            llm: Arc::new(Mutex::new(LLMProvider::new())),
+            // Pass config to LLMProvider
+            llm: Arc::new(Mutex::new(LLMProvider::new(Arc::clone(&config_arc)))),
             scroll_view_state: ScrollViewState::default(),
+            config: config_arc, // Store Arc<Config>
         }
     }
 
@@ -66,9 +72,8 @@ impl<'a> App<'a> {
                     self.current_message.take();
                 }
                 Ok(Event::Notification(msg)) => {
-                    // self.notification.replace(msg);
-
-                    self.notification.get_or_insert(msg.clone()).push_str(&msg);
+                    // Replace the notification with the new message
+                    self.notification = Some(msg);
                 }
                 Ok(Event::TickEvent) => {
                     // println!("tick");
@@ -205,9 +210,15 @@ impl<'a> App<'a> {
         let tx = self.event_manager.get_sender();
         tokio::spawn(async move {
             let mut llm = llm.lock().await;
-            llm.request(&prompt, history, tx)
-                .await
-                .expect("llm request failed");
+            if let Err(e) = llm.request(&prompt, history, tx.clone()).await {
+                let error_message = format!("LLM request error: {}", e);
+                // Send notification event
+                if tx.send(Event::Notification(error_message)).is_err() {
+                    // Log error if sending notification fails, though not much else to do here
+                    // In a real app, this might go to a log file or stderr
+                    eprintln!("Failed to send error notification to event loop");
+                }
+            }
         });
         self.clear();
     }
