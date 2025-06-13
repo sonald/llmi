@@ -7,9 +7,12 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Widget, Wrap},
 };
 use serde::{Deserialize, Serialize};
-use std::io::Result;
+use std::io::Result; // Keep this if LLMService::request still uses std::io::Result
+use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 
+// Import LlmProviderType and Config
+use crate::config::{Config, LlmProviderType};
 use crate::{chatgpt::ChatGPT, event::Event};
 
 // LLMResponse Example:
@@ -142,13 +145,35 @@ pub trait LLMService: Send + Sync {
         prompt: &str,
         mut history: Vec<Message>,
         tx: UnboundedSender<Event>,
-    ) -> Result<()>;
+    ) -> std::result::Result<(), Box<dyn std::error::Error>>; // Modified to match ChatGPT's request signature
 }
 
 pub struct LLMProvider {}
 
 impl LLMProvider {
-    pub fn new() -> Box<dyn LLMService> {
-        Box::new(ChatGPT::new())
+    // Modified to accept Arc<Config> and use llm_provider from config
+    pub fn new(config: Arc<Config>) -> Box<dyn LLMService> {
+        match config.llm_provider {
+            LlmProviderType::ChatGPT => {
+                Box::new(ChatGPT::new(config))
+            }
+            // Add other providers here when they are implemented
+            // For example:
+            // LlmProviderType::Ollama => {
+            //     // Box::new(Ollama::new(config)) // Assuming Ollama struct and new method
+            //     panic!("Ollama provider not yet implemented.");
+            // }
+            // Using a wildcard for any other (currently unhandled) enum variants.
+            // This shouldn't be reached if LlmProviderType::from_str in config.rs
+            // only successfully parses "chatgpt". If it does, it's an issue.
+            #[allow(unreachable_patterns)] // To suppress warning if only ChatGPT exists
+            _ => {
+                // This case should ideally not be reached if Config::from_env correctly
+                // defaults to ChatGPT or errors for unsupported strings.
+                // However, as a safeguard, if an LlmProviderType variant exists for which
+                // instantiation logic is missing, we panic.
+                panic!("Unsupported or unknown LLM provider type configured: {:?}", config.llm_provider);
+            }
+        }
     }
 }
